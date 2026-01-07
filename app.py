@@ -23,13 +23,13 @@ def get_google_news(query, country_code="IN", language_code="en-IN"):
     
     try:
         feed = feedparser.parse(base_url + params)
+        # Standardize keys: title, link, source
         return [{"title": x.title, "link": x.link, "source": "Google News"} for x in feed.entries[:10]]
     except Exception:
         return []
 
 def get_reddit(query):
     """ Source 2: Reddit JSON API """
-    # If query exists, search. If not, get r/popular (global trends)
     if query:
         url = f"https://www.reddit.com/search.json?q={urllib.parse.quote(query)}&sort=relevance&limit=10"
     else:
@@ -43,7 +43,6 @@ def get_reddit(query):
         posts = []
         for item in data['data']['children']:
             post = item['data']
-            # Only take safe posts with some popularity
             if not post.get('over_18'):
                 posts.append({
                     "title": post['title'],
@@ -56,12 +55,11 @@ def get_reddit(query):
         return []
 
 def get_hacker_news(query):
-    """ Source 3: Hacker News (via hnrss.org) """
-    # HNRSS provides excellent RSS feeds for HN
+    """ Source 3: Hacker News """
     if query:
         url = f"https://hnrss.org/newest?q={urllib.parse.quote(query)}"
     else:
-        url = "https://hnrss.org/frontpage" # Top stories
+        url = "https://hnrss.org/frontpage"
 
     try:
         feed = feedparser.parse(url)
@@ -119,11 +117,14 @@ def analyze_virality(topics, api_key, platform):
         
         results = json.loads(content)
         
-        # Merge original link/source back
+        # --- THE FIX IS HERE ---
+        # We manually attach the original title as 'topic' so generate_post can find it.
         for i, res in enumerate(results):
             if i < len(topics_data):
                 res['link'] = topics_data[i]['link']
                 res['source'] = topics_data[i]['source']
+                res['topic'] = topics_data[i]['title'] # <--- Added this line
+                
         return results
     except Exception as e:
         st.error(f"Analysis Error: {e}")
@@ -131,15 +132,19 @@ def analyze_virality(topics, api_key, platform):
 
 def generate_post(topic_dict, platform, api_key, context=None):
     client = OpenAI(api_key=api_key)
-    context_str = f"Source Text: {context}" if context else "No source text."
+    context_str = f"Source Text: {context}" if context else "No source text available."
     
+    # We use .get() to avoid crashing if 'topic' is missing, but our fix above ensures it is there.
+    topic_title = topic_dict.get('topic', topic_dict.get('headline', 'Unknown Topic'))
+
     prompt = f"""
     Platform: {platform}
-    Topic: {topic_dict['topic']}
-    Hook: {topic_dict['headline']}
+    Topic: {topic_title}
+    Hook: {topic_dict.get('headline', '')}
     {context_str}
     
-    Write a viral post. If source text exists, use facts from it.
+    Write a high-engagement, viral post. 
+    If source text is provided, include specific facts from it.
     """
     try:
         response = client.chat.completions.create(
@@ -169,7 +174,7 @@ with st.sidebar:
     openai_key = st.text_input("OpenAI API Key", type="password")
     
     st.divider()
-    # NEW: Source Selector
+    # Source Selector
     data_source = st.selectbox("Select Data Source", ["Google News", "Reddit", "Hacker News"])
     
     search_query = st.text_input("Search Keyword (Optional)", placeholder="e.g. AI, Spices, Politics")
@@ -180,7 +185,7 @@ with st.sidebar:
             with st.spinner(f"Scraping {data_source}..."):
                 raw_data = []
                 
-                # Route request to correct function
+                # Route request
                 if data_source == "Google News":
                     raw_data = get_google_news(search_query)
                 elif data_source == "Reddit":
@@ -212,8 +217,11 @@ if 'analyzed_data' in st.session_state and st.session_state.analyzed_data is not
     
     with col1:
         st.subheader("2. Select & Generate")
+        # Creating options list
         options = [f"({r['score']}) {r['headline']}" for i, r in df.iterrows()]
         selected_str = st.selectbox("Choose Topic:", options)
+        
+        # Get selected row safely
         selected_idx = options.index(selected_str)
         selected_data = df.iloc[selected_idx]
         
